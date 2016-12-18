@@ -27,12 +27,16 @@ strings "-" or "no") the virtual private network namespace will have a virtual
 interface connected to the specified vde network. The name of the virtual interface
 is "vde0" unless a different name has been specified by the \fB-i\fR parameter.
 
-Vdens grants the capabilities CAP_NET_ADMIN and CAP_NET_RAW to the command to
+Vdens grants the capabilities CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST, CAP_NET_ADMIN and CAP_NET_RAW to the command to
 permit the configuration of the virtual interface. The scope of these
 capabilities is limited to the user namespace created by vdens. Once the network has been
 configured, the capabilities can be dropped (e.g. using csdrop(1)) in order to
 increase the security (obeying to the principle of least privilege).
 
+.SH NOTES
+Use of user namespaces requires a kernel that is configured with the CONFIG_USER_NS option.
+In some distributions (e.g. Debian) user namespaces must be enabled by writing 1 to
+/proc/sys/kernel/unprivileged_userns_clone.
 .SH SEE ALSO
 \fBvde_plug\fR(1),
 \fBcadrop\fR(1),
