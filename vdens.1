@@ -1,0 +1,42 @@
+.TH VDENS 1 "November 26, 2016" "VirtualSquare Labs"
+.SH NAME
+vdens \- create a user namespace connected to a vde network
+.SH SYNOPSIS
+.B vdens
+[ -i
+.I interface_name
+]
+[
+.I vde_network
+[
+.I command
+[
+.I args
+]
+]
+]
+
+.SH DESCRIPTION
+
+vdens creates a user namespace with a private network namespace.
+
+Vdens launches the command indicated as a parameter ($SHELL if omitted) in a private network namespace.
+
+If the vde_nextork parameter is present (and it does not match one of the
+strings "-" or "no") the virtual private network namespace will have a virtual
+interface connected to the specified vde network. The name of the virtual interface
+is "vde0" unless a different name has been specified by the \fB-i\fR parameter.
+
+Vdens grants the capabilities CAP_NET_ADMIN and CAP_NET_RAW to the command to
+permit the configuration of the virtual interface. The scope of these
+capabilities is limited to the user namespace created by vdens. Once the network has been
+configured, the capabilities can be dropped (e.g. using csdrop(1)) in order to
+increase the security (obeying to the principle of least privilege).
+
+.SH SEE ALSO
+\fBvde_plug\fR(1),
+\fBcadrop\fR(1),
+\fBcado\fR(1),
+\fBcapabilities\fR(7)
+.SH AUTHORS
+Renzo Davoli <renzo@cs.unibo.it>, Davide Berardi <berardi.dav@gmail.com>.
