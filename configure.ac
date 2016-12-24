@@ -13,7 +13,7 @@ AC_CHECK_LIB([cap], [cap_get_proc])
 AC_CHECK_LIB([execs], [s2multiargv])
 
 # Checks for header files.
-AC_CHECK_HEADERS([fcntl.h limits.h stdlib.h sys/ioctl.h unistd.h])
+AC_CHECK_HEADERS([fcntl.h limits.h stdlib.h sys/ioctl.h sys/capability.h unistd.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
 AC_TYPE_UID_T
