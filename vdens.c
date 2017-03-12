@@ -56,17 +56,6 @@
 #define CONNTYPE_VDE 1
 #define CONNTYPE_VDESTREAM 2
 
-struct child_args {
-	char **argv;
-	int	pipe_fd[2];  /* Pipe used to synchronize parent and child */
-	char *if_name;
-	int conntype;
-	union {
-		VDECONN *vdeconn;
-		int streamfd[2];
-	} conn;
-};
-
 static void usage_exit(char *pname)
 {
 	fprintf(stderr, 
@@ -179,23 +168,7 @@ static void stream2tap(int streamfd[2], int tapfd) {
 	}
 }
 
-/* Start function for cloned child */
-static int              childFunc(void *arg)
-{
-	struct child_args *args = (struct child_args *) arg;
-	char ch;
-	int tapfd;
-	pid_t cmdpid;
-
-	/* Wait until the parent has updated the UID and GID mappings. */
-	if (read(args->pipe_fd[0], &ch, 1) != 0) {
-		fprintf(stderr,
-				"Failure in child: read from pipe returned != 0\n");
-		exit(EXIT_FAILURE);
-	}
-
-	close(args->pipe_fd[0]);
-
+static void setvdenscap(void) {
 	/* set the capability to allow net configuration */
 	cap_value_t cap = CAP_NET_ADMIN;
 	cap_t caps=cap_get_proc();
@@ -212,49 +185,6 @@ static int              childFunc(void *arg)
 	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_RAW, 0, 0);
 	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BIND_SERVICE, 0, 0);
 	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BROADCAST, 0, 0);
-
-	/* create a net interface in the new namespace*/
-
-	switch (args->conntype) {
-		case CONNTYPE_NONE:
-			execvp(args->argv[0], args->argv);
-			errExit("execvp");
-			break;
-		case CONNTYPE_VDE:
-			if ((tapfd = open_tap(args->if_name)) < 0)
-				errExit("tap");
-			switch (cmdpid=fork()) {
-				case 0:
-					execvp(args->argv[0], args->argv);
-					errExit("execvp");
-					break;
-				default:
-					plug2tap(args->conn.vdeconn, tapfd);
-					exit(EXIT_SUCCESS);
-				case -1:
-					errExit("cmd fork");
-					break;
-			}
-			break;
-		case CONNTYPE_VDESTREAM:
-			if ((tapfd = open_tap(args->if_name)) < 0)
-				errExit("tap");
-			switch (cmdpid=fork()) {
-				case 0:
-					execvp(args->argv[0], args->argv);
-					errExit("execvp");
-					break;
-				default:
-					stream2tap(args->conn.streamfd, tapfd);
-					exit(EXIT_SUCCESS);
-				case -1:
-					errExit("cmd fork");
-					break;
-			}
-			break;
-		default:
-			errExit("unknown conn type");
-	}
 }
 
 int argv1_help(char *s) {
@@ -277,85 +207,120 @@ int argv1_nonet(char *s) {
 	return 0;
 }
 
-#define STACK_SIZE (1024 * 1024)
-
-static char child_stack[STACK_SIZE];    /* Space for child's stack */
-
 int main(int argc, char *argv[])
 {
 	pid_t child_pid;
-	struct child_args args;
+	int pipe_fd[2];
+	int tapfd;
+	int conntype;
+	char *if_name;
+	char **cmdargv;
+	union {
+		VDECONN *vdeconn;
+		int streamfd[2];
+	} conn;
 	char *vdenet = NULL;
 	char *argvsh[]={getenv("SHELL"),NULL};
 
 	switch (argc) {
 		case 1:
-			args.argv = argvsh;
+			cmdargv = argvsh;
 			break;
 		case 2:
 			if (argv1_help(argv[1]))
 				usage_exit(basename(argv[0]));
 		default:
 			if (strcmp(argv[1], "-i") == 0 && argc > 3) {
-				args.if_name = argv[2];
+				if_name = argv[2];
 				vdenet = argv[3];
-				args.argv = argc > 4 ? argv + 4 : argvsh;
+				cmdargv = argc > 4 ? argv + 4 : argvsh;
 			} else {
-				args.if_name = DEFAULT_IF_NAME;
+				if_name = DEFAULT_IF_NAME;
 				vdenet = argv[1];
-				args.argv = argc > 2 ? argv + 2 : argvsh;
+				cmdargv = argc > 2 ? argv + 2 : argvsh;
 			}
 			break;
 	}
 
-	if (args.argv[0] == NULL) {
+	if (cmdargv[0] == NULL) {
 		fprintf(stderr, "Error: $SHELL env variable not set\n");
 		exit(EXIT_FAILURE); 
 	}
 
 	if (vdenet == NULL || argv1_nonet(vdenet))
-		args.conntype = CONNTYPE_NONE;
+		conntype = CONNTYPE_NONE;
 	else if (*vdenet == '=') {
-		args.conntype = CONNTYPE_VDESTREAM;
-		if (coprocsp(vdenet+1, args.conn.streamfd) < 0)
+		conntype = CONNTYPE_VDESTREAM;
+		if (coprocsp(vdenet+1, conn.streamfd) < 0)
 			errExit("stream cmd");
 	} else {
-		args.conntype = CONNTYPE_VDE;
-		if ((args.conn.vdeconn = vde_open(vdenet, "vdens", NULL)) == NULL)
+		conntype = CONNTYPE_VDE;
+		if ((conn.vdeconn = vde_open(vdenet, "vdens", NULL)) == NULL)
 			errExit("vdeplug");
 	}
 
-	/* We use a pipe to synchronize the parent and child, in order to
-		 ensure that the parent sets the UID and GID maps before the child
-		 calls execve(). This ensures that the child maintains its
-		 capabilities during the execve() in the common case where we
-		 want to map the child's effective user ID to 0 in the new user
-		 namespace. Without this synchronization, the child would lose
-		 its capabilities if it performed an execve() with nonzero
-		 user IDs (see the capabilities(7) man page for details of the
-		 transformation of a process's capabilities during execve()). */
-
-	if (pipe2(args.pipe_fd, O_CLOEXEC) == -1)
+	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
 		errExit("pipe");
 	
-	/* Create the child in new namespace(s) */
-
-	child_pid = clone(childFunc, child_stack + STACK_SIZE,
-			CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | SIGCHLD, &args);
-	if (child_pid == -1)
-		errExit("clone");
-
-	/* Parent falls through to here */
-
-	uid_gid_map(child_pid);
-
-	/* Close the write end of the pipe, to signal to the child that we
-		 have updated the UID and GID maps */
-
-	close(args.pipe_fd[1]);
-
-	if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
-		errExit("waitpid");
+	char buf[1];
+	switch (child_pid = fork()) {
+		case 0:
+			close(pipe_fd[1]);
+			read(pipe_fd[0], &buf, sizeof(buf));
+			uid_gid_map(getppid());
+			exit(0);
+		default:
+			close(pipe_fd[0]);
+			if (unshare(CLONE_NEWUSER | CLONE_NEWNET) == -1)
+				errExit("unshare");
+			close(pipe_fd[1]);
+			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
+				errExit("waitpid");
+			break;
+		case -1:
+			errExit("unshare fork");
+	}
+	setvdenscap();
+	switch (conntype) {
+		case CONNTYPE_NONE:
+			execvp(cmdargv[0], cmdargv);
+			errExit("execvp");
+			break;
+		case CONNTYPE_VDE:
+			if ((tapfd = open_tap(if_name)) < 0)
+				errExit("tap");
+			switch (child_pid = fork()) {
+				case 0:
+					execvp(cmdargv[0], cmdargv);
+					errExit("execvp");
+					break;
+				default:
+					plug2tap(conn.vdeconn, tapfd);
+					exit(EXIT_SUCCESS);
+				case -1:
+					errExit("cmd fork");
+					break;
+			}
+			break;
+		case CONNTYPE_VDESTREAM:
+			if ((tapfd = open_tap(if_name)) < 0)
+				errExit("tap");
+			switch (child_pid = fork()) {
+				case 0:
+					execvp(cmdargv[0], cmdargv);
+					errExit("execvp");
+					break;
+				default:
+					stream2tap(conn.streamfd, tapfd);
+					exit(EXIT_SUCCESS);
+				case -1:
+					errExit("cmd fork");
+					break;
+			}
+			break;
+		default:
+			errExit("unknown conn type");
+	}
 
 	exit(EXIT_SUCCESS);
 }
