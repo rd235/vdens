@@ -153,7 +153,7 @@ static int open_tap(char *name) {
 
 static void plug2tap(VDECONN *conn, int tapfd) {
 	int n;
-	char buf[4096];
+	char buf[VDE_ETHBUFSIZE];
 	struct pollfd pfd[] = {{tapfd, POLLIN, 0}, {vde_datafd(conn), POLLIN, 0}, {-1, POLLIN, 0}};
 	sigset_t chldmask;
 	sigemptyset(&chldmask);
@@ -162,12 +162,12 @@ static void plug2tap(VDECONN *conn, int tapfd) {
 	pfd[2].fd = sfd;
 	while (ppoll(pfd, 3, NULL, &chldmask) >= 0) {
 		if (pfd[0].revents & POLLIN) {
-			n = read(tapfd, buf, 4096);
+			n = read(tapfd, buf, VDE_ETHBUFSIZE);
 			if (n == 0) break;
 			vde_send(conn, buf, n, 0);
 		}
 		if (pfd[1].revents & POLLIN) {
-			n = vde_recv(conn, buf, 4096, 0);
+			n = vde_recv(conn, buf, VDE_ETHBUFSIZE, 0);
 			if (n == 0) break;
 			write(tapfd, buf, n);
 		}
@@ -186,7 +186,7 @@ static ssize_t stream2tap_read(void *opaque, void *buf, size_t count) {
 
 static void stream2tap(int streamfd[2], int tapfd) {
 	int n;
-	unsigned char buf[4096];
+	unsigned char buf[VDE_ETHBUFSIZE];
 	struct pollfd pfd[] = {{tapfd, POLLIN, 0}, {streamfd[0], POLLIN, 0}, {-1, POLLIN, 0}};
 	sigset_t chldmask;
 	sigemptyset(&chldmask);
@@ -196,12 +196,12 @@ static void stream2tap(int streamfd[2], int tapfd) {
 	pfd[2].fd = sfd;
 	while (ppoll(pfd, 3, NULL, &chldmask) >= 0) {
 		if (pfd[0].revents & POLLIN) {
-			n = read(tapfd, buf, 4096);
+			n = read(tapfd, buf, VDE_ETHBUFSIZE);
 			if (n == 0) break;
 			vdestream_send(vdestream, buf, n);
 		}
 		if (pfd[1].revents & POLLIN) {
-			n = read(streamfd[0], buf, 4096);
+			n = read(streamfd[0], buf, VDE_ETHBUFSIZE);
 			if (n == 0) break;
 			vdestream_recv(vdestream, buf, n);
 		}
