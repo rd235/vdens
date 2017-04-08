@@ -66,21 +66,6 @@ static void usage_exit(char *pname)
 	exit(EXIT_FAILURE);
 }
 
-static int open_tap(char *name) {
-	struct ifreq ifr;
-	int fd=-1;
-	if((fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC)) < 0)
-		return -1;
-	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
-	strncpy(ifr.ifr_name, name, sizeof(ifr.ifr_name) - 1);
-	if(ioctl(fd, TUNSETIFF, (void *) &ifr) < 0) {
-		close(fd);
-		return -1;
-	}
-	return fd;
-}
-
 static void uid_gid_map(pid_t pid) {
 	char map_file[PATH_MAX];
 	FILE *f;
@@ -104,6 +89,66 @@ static void uid_gid_map(pid_t pid) {
 		fprintf(f,"%d %d 1\n",egid,egid);
 		fclose(f);
 	}
+}
+
+static void setvdenscap(void) {
+	/* set the capability to allow net configuration */
+	cap_value_t cap = CAP_NET_ADMIN;
+	cap_t caps=cap_get_proc();
+	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
+	cap = CAP_NET_RAW;
+	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
+	cap = CAP_NET_BIND_SERVICE;
+	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
+	cap = CAP_NET_BROADCAST;
+	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
+	cap_set_proc(caps);
+	cap_free(caps);
+	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
+	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_RAW, 0, 0);
+	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BIND_SERVICE, 0, 0);
+	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BROADCAST, 0, 0);
+}
+
+static void unsharenet(void) {
+	int pipe_fd[2];
+	pid_t child_pid;
+	char buf[1];
+	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
+		errExit("pipe");
+	switch (child_pid = fork()) {
+		case 0:
+			close(pipe_fd[1]);
+			read(pipe_fd[0], &buf, sizeof(buf));
+			uid_gid_map(getppid());
+			exit(0);
+		default:
+			close(pipe_fd[0]);
+			if (unshare(CLONE_NEWUSER | CLONE_NEWNET) == -1)
+				errExit("unshare");
+			close(pipe_fd[1]);
+			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
+				errExit("waitpid");
+			break;
+		case -1:
+			errExit("unshare fork");
+	}
+	setvdenscap();
+}
+
+static int open_tap(char *name) {
+	struct ifreq ifr;
+	int fd=-1;
+	if((fd = open("/dev/net/tun", O_RDWR | O_CLOEXEC)) < 0)
+		return -1;
+	memset(&ifr, 0, sizeof(ifr));
+	ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+	strncpy(ifr.ifr_name, name, sizeof(ifr.ifr_name) - 1);
+	if(ioctl(fd, TUNSETIFF, (void *) &ifr) < 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
 }
 
 static void plug2tap(VDECONN *conn, int tapfd) {
@@ -168,25 +213,6 @@ static void stream2tap(int streamfd[2], int tapfd) {
 	}
 }
 
-static void setvdenscap(void) {
-	/* set the capability to allow net configuration */
-	cap_value_t cap = CAP_NET_ADMIN;
-	cap_t caps=cap_get_proc();
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap = CAP_NET_RAW;
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap = CAP_NET_BIND_SERVICE;
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap = CAP_NET_BROADCAST;
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap_set_proc(caps);
-	cap_free(caps);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_RAW, 0, 0);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BIND_SERVICE, 0, 0);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BROADCAST, 0, 0);
-}
-
 int argv1_help(char *s) {
 	if (strcmp(s,"-h") == 0)
 		return 1;
@@ -210,7 +236,6 @@ int argv1_nonet(char *s) {
 int main(int argc, char *argv[])
 {
 	pid_t child_pid;
-	int pipe_fd[2];
 	int tapfd;
 	int conntype;
 	char *if_name;
@@ -259,28 +284,7 @@ int main(int argc, char *argv[])
 			errExit("vdeplug");
 	}
 
-	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
-		errExit("pipe");
-	
-	char buf[1];
-	switch (child_pid = fork()) {
-		case 0:
-			close(pipe_fd[1]);
-			read(pipe_fd[0], &buf, sizeof(buf));
-			uid_gid_map(getppid());
-			exit(0);
-		default:
-			close(pipe_fd[0]);
-			if (unshare(CLONE_NEWUSER | CLONE_NEWNET) == -1)
-				errExit("unshare");
-			close(pipe_fd[1]);
-			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
-				errExit("waitpid");
-			break;
-		case -1:
-			errExit("unshare fork");
-	}
-	setvdenscap();
+	unsharenet();
 	switch (conntype) {
 		case CONNTYPE_NONE:
 			execvp(cmdargv[0], cmdargv);
