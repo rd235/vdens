@@ -177,6 +177,7 @@ static void plug2tap(VDECONN *conn, int tapfd) {
 			break;
 		}
 	}
+	vde_close(conn);
 }
 
 static ssize_t stream2tap_read(void *opaque, void *buf, size_t count) {
