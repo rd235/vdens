@@ -91,23 +91,21 @@ static void uid_gid_map(pid_t pid) {
 	}
 }
 
-static void setvdenscap(void) {
-	/* set the capability to allow net configuration */
-	cap_value_t cap = CAP_NET_ADMIN;
+static void setambientcaps(cap_value_t *caplist) {
 	cap_t caps=cap_get_proc();
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap = CAP_NET_RAW;
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap = CAP_NET_BIND_SERVICE;
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
-	cap = CAP_NET_BROADCAST;
-	cap_set_flag(caps, CAP_INHERITABLE, 1, &cap, CAP_SET);
+	cap_value_t *cap;
+	for (cap = caplist; *cap >= 0; cap++) 
+		cap_set_flag(caps, CAP_INHERITABLE, 1, cap, CAP_SET);
 	cap_set_proc(caps);
 	cap_free(caps);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_ADMIN, 0, 0);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_RAW, 0, 0);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BIND_SERVICE, 0, 0);
-	prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_NET_BROADCAST, 0, 0);
+	for (cap = caplist; *cap >= 0; cap++) 
+		prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, *cap, 0, 0);
+}
+
+static cap_value_t vdecaps[] = {CAP_NET_ADMIN, CAP_NET_RAW, CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST, -1};
+
+static void setvdenscap(void) {
+	setambientcaps(vdecaps);
 }
 
 static void unsharenet(void) {
