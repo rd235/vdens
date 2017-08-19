@@ -38,17 +38,6 @@
 #include <sys/signalfd.h>
 #include <execs.h>
 
-/* just in case prctl.h is not providing these definitions */
-#ifndef PR_CAP_AMBIENT
-#define PR_CAP_AMBIENT      47
-#endif
-#ifndef PR_CAP_AMBIENT_RAISE
-#define PR_CAP_AMBIENT_RAISE  2
-#endif
-#ifndef PR_CAP_AMBIENT_LOWER
-#define PR_CAP_AMBIENT_LOWER  3
-#endif
-
 #define DEFAULT_IF_NAME "vde0"
 #define errExit(msg)    ({ perror(msg); exit(EXIT_FAILURE); })
 
