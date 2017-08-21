@@ -36,7 +36,10 @@
 #include <libvdeplug.h>
 #include <poll.h>
 #include <sys/signalfd.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <execs.h>
+#include <getopt.h>
 
 #define DEFAULT_IF_NAME "vde0"
 #define errExit(msg)    ({ perror(msg); exit(EXIT_FAILURE); })
@@ -48,10 +51,18 @@
 static void usage_exit(char *pname)
 {
 	fprintf(stderr, 
-			"Usage: %s [-i ifname] [vde_net [cmd [arg...]]]\n"
-			"\tno virtual interface if vde_net omitted or \"no\"\n"
-			"\t-i defines the interface name, the default value is \"vde0\"\n"
-			"\tit runs $SHELL if cmd omitted\n\n" , pname);
+			"Usage: %s OPTIONS  [vde_net [cmd [arg...]]]\n"
+			"OPTIONS:\n"
+			"  -h | --help   print this short usage message\n"
+			"  -i | --iface intname\n"
+			"                defines the interface name, the default value is \"vde0\"\n"
+			"  -r | --resolvconf file\n"
+			"                defines the /etc/resolv.conf file, e.g. -r /tmp/resolv.conf\n"
+			"  -R | --resolvaddr string\n"
+			"                defines the address of the DNS servers, e.g. -R 80.80.80.80\n"
+			"  -s | --sysadm enable the cap_sys_admin ambient capability\n\n"
+			"  no virtual interface if vde_net omitted or \"no\"\n"
+			"  it runs $SHELL if cmd omitted\n\n" , pname);
 	exit(EXIT_FAILURE);
 }
 
@@ -91,13 +102,13 @@ static void setambientcaps(cap_value_t *caplist) {
 		prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, *cap, 0, 0);
 }
 
-static cap_value_t vdecaps[] = {CAP_NET_ADMIN, CAP_NET_RAW, CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST, -1};
+static cap_value_t vdecaps[] = {CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_NET_RAW, CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST, -1};
 
-static void setvdenscap(void) {
-	setambientcaps(vdecaps);
+static void setvdenscap(int sysadm) {
+	setambientcaps(vdecaps + (sysadm ? 0 : 1));
 }
 
-static void unsharenet(void) {
+static void unsharenet(int sysadm, int clonens) {
 	int pipe_fd[2];
 	pid_t child_pid;
 	char buf[1];
@@ -111,7 +122,7 @@ static void unsharenet(void) {
 			exit(0);
 		default:
 			close(pipe_fd[0]);
-			if (unshare(CLONE_NEWUSER | CLONE_NEWNET) == -1)
+			if (unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0)) == -1)
 				errExit("unshare");
 			close(pipe_fd[1]);
 			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
@@ -120,7 +131,7 @@ static void unsharenet(void) {
 		case -1:
 			errExit("unshare fork");
 	}
-	setvdenscap();
+	setvdenscap(sysadm);
 }
 
 static int open_tap(char *name) {
@@ -201,12 +212,31 @@ static void stream2tap(int streamfd[2], int tapfd) {
 	}
 }
 
-int argv1_help(char *s) {
-	if (strcmp(s,"-h") == 0)
-		return 1;
-	if (strcmp(s,"--help") == 0)
-		return 1;
-	return 0;
+int mountaddr(const char *addr) {
+	char tmpname[] = "/tmp/vdensmountXXXXXX";
+	int fd = mkstemp(tmpname);
+	int retval;
+	const char *tagbegin, *tagend;
+	if (fd < 0)
+		return -1;
+	fchmod(fd, 0600);
+	for (tagbegin = addr; *tagbegin != 0; tagbegin = tagend) {
+		char *line;
+		size_t len;
+		for (tagend = tagbegin; *tagend != 0 && *tagend != ','; tagend++)
+			;
+		len = tagend-tagbegin;
+		while (*tagend == ',')
+			tagend++;
+		asprintf(&line, "nameserver %*.*s\n", len, len, tagbegin);
+		write(fd, line, strlen(line));
+		free(line);
+	}
+	fchmod(fd, 0400);
+	close(fd);
+	retval = mount(tmpname, "/etc/resolv.conf",  "", MS_BIND, NULL);
+	unlink(tmpname);
+	return retval;
 }
 
 int argv1_nonet(char *s) {
@@ -226,32 +256,63 @@ int main(int argc, char *argv[])
 	pid_t child_pid;
 	int tapfd;
 	int conntype;
-	char *if_name;
+	int sysadm_flag = 0;
+	char *resolvconf = getenv("VDE_RESOLVCONF");
+	char *resolvaddr = getenv("VDE_RESOLVADDR");
+	char *if_name = DEFAULT_IF_NAME;
+	char *argvsh[] = {getenv("SHELL"),NULL};
 	char **cmdargv;
 	union {
 		VDECONN *vdeconn;
 		int streamfd[2];
 	} conn;
 	char *vdenet = NULL;
-	char *argvsh[]={getenv("SHELL"),NULL};
+	static char *short_options = "+i:hsr:R:";
+	static struct option long_options[] = {
+		{"help", no_argument, 0, 'h'},
+		{"iface", required_argument, 0, 'i'},
+		{"sysadm", no_argument, 0, 's'},
+		{"resolvconf", required_argument, 0, 'r'},
+		{"resolvaddr", required_argument, 0, 'R'},
+		{0, 0, 0, 0}};
+	char *progname = basename(argv[0]);
+
+	while (1) {
+		int c;
+		if ((c = getopt_long(argc, argv, short_options, long_options, NULL)) == -1)
+			break;
+		switch (c) {
+			case 'i': 
+				if_name = optarg;
+				break;
+			case 'r':
+				resolvconf = optarg;
+				break;
+			case 'R':
+				resolvaddr = optarg;
+				break;
+			case 's':
+				sysadm_flag = 1;
+				break;
+			case '?':
+			case 'h':
+			default: usage_exit(progname);
+		}
+	}
+	argc -= optind;
+	argv += optind;
 
 	switch (argc) {
-		case 1:
+		case 0:
 			cmdargv = argvsh;
 			break;
-		case 2:
-			if (argv1_help(argv[1]))
-				usage_exit(basename(argv[0]));
+		case 1:
+			cmdargv = argvsh;
+			vdenet = argv[0];
+			break;
 		default:
-			if (strcmp(argv[1], "-i") == 0 && argc > 3) {
-				if_name = argv[2];
-				vdenet = argv[3];
-				cmdargv = argc > 4 ? argv + 4 : argvsh;
-			} else {
-				if_name = DEFAULT_IF_NAME;
-				vdenet = argv[1];
-				cmdargv = argc > 2 ? argv + 2 : argvsh;
-			}
+			cmdargv = argv + 1;
+			vdenet = argv[0];
 			break;
 	}
 
@@ -272,7 +333,15 @@ int main(int argc, char *argv[])
 			errExit("vdeplug");
 	}
 
-	unsharenet();
+	unsharenet(sysadm_flag, sysadm_flag | (resolvconf != NULL) | (resolvaddr != NULL));
+
+	if (resolvaddr) {
+		if (mountaddr(resolvaddr) < 0)
+			errExit("resolvaddr mount");
+	} else
+		if (resolvconf && mount(resolvconf, "/etc/resolv.conf", "", MS_BIND, NULL) < 0)
+			errExit("resolvconf mount");
+
 	switch (conntype) {
 		case CONNTYPE_NONE:
 			execvp(cmdargv[0], cmdargv);
