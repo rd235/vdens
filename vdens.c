@@ -122,8 +122,10 @@ static void unsharenet(int sysadm, int clonens) {
 			exit(0);
 		default:
 			close(pipe_fd[0]);
-			if (unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0)) == -1)
+			if (unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0)) == -1) {
+				close(pipe_fd[1]);
 				errExit("unshare");
+			}
 			close(pipe_fd[1]);
 			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
 				errExit("waitpid");
