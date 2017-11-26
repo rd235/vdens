@@ -62,6 +62,21 @@ define the pathname of the file which will appear as /etc/config.sys in the user
 grant also CAP_SYS_ADMIN in the namespace so that it is possible to bind mount files and
 directories.
 
+.TP
+\fB\-c
+.TQ
+\fB\-\-clone
+Use clone(2) to create the private network namespace. Vdens needs one more thread to manage
+the vde communication.
+
+.TP
+\fB\-u
+.TQ
+\fB\-\-unshare
+Use unshare(2) to create the private network namespace. It may not work if the vde plugin in use
+is multithreaded (e.g. slirp). If neither -c/--clone nor -u/--unshare is set, vdens tries
+unshare first and then it uses clone if unshare fails. (If both are set vdens uses clone).
+
 .SH ENVIRONMENT VARIABLES
 .TP
 \fBVDE_RESOLVCONF

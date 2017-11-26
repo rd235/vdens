@@ -48,6 +48,19 @@
 #define CONNTYPE_VDE 1
 #define CONNTYPE_VDESTREAM 2
 
+int conntype;
+union {
+	VDECONN *vdeconn;
+	int streamfd[2];
+} conn;
+char *resolvaddr;
+char *resolvconf;
+char *if_name = DEFAULT_IF_NAME;
+char **cmdargv;
+int sysadm_flag;
+
+void vdens_core(void);
+
 static void usage_exit(char *pname)
 {
 	fprintf(stderr, 
@@ -55,14 +68,19 @@ static void usage_exit(char *pname)
 			"OPTIONS:\n"
 			"  -h | --help   print this short usage message\n"
 			"  -i | --iface intname\n"
-			"                defines the interface name, the default value is \"vde0\"\n"
+			"                 defines the interface name, the default value is \"vde0\"\n"
 			"  -r | --resolvconf file\n"
-			"                defines the /etc/resolv.conf file, e.g. -r /tmp/resolv.conf\n"
+			"                 defines the /etc/resolv.conf file, e.g. -r /tmp/resolv.conf\n"
 			"  -R | --resolvaddr string\n"
-			"                defines the address of the DNS servers, e.g. -R 80.80.80.80\n"
-			"  -s | --sysadm enable the cap_sys_admin ambient capability\n\n"
+			"                 defines the address of the DNS servers, e.g. -R 80.80.80.80\n"
+			"  -s | --sysadm  enable the cap_sys_admin ambient capability\n"
+			"  -c | --clone   use clone instead of unshare:\n"
+			"                 %s uses one more process\n"
+			"                 (default bevavior: try unshare and use clone if unshare fails)\n"
+			"  -u | --unshare use unshare instead of clone:\n"
+			"                 %s saves 1 process (for non-multithreaded vde plugins only)\n"
 			"  no virtual interface if vde_net omitted or \"no\"\n"
-			"  it runs $SHELL if cmd omitted\n\n" , pname);
+			"  it runs $SHELL if cmd omitted\n\n" , pname, pname);
 	exit(EXIT_FAILURE);
 }
 
@@ -108,24 +126,23 @@ static void setvdenscap(int sysadm) {
 	setambientcaps(vdecaps + (sysadm ? 0 : 1));
 }
 
-static void unsharenet(int sysadm, int clonens) {
+static int unsharenet(int sysadm, int clonens) {
 	int pipe_fd[2];
 	pid_t child_pid;
-	char buf[1];
+	int unshare_rv;
 	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
 		errExit("pipe");
 	switch (child_pid = fork()) {
 		case 0:
 			close(pipe_fd[1]);
-			read(pipe_fd[0], &buf, sizeof(buf));
-			uid_gid_map(getppid());
+			read(pipe_fd[0], &unshare_rv, sizeof(unshare_rv));
+			if (unshare_rv == 0)
+				uid_gid_map(getppid());
 			exit(0);
 		default:
 			close(pipe_fd[0]);
-			if (unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0)) == -1) {
-				close(pipe_fd[1]);
-				errExit("unshare");
-			}
+			unshare_rv = unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0));
+			write(pipe_fd[1], &unshare_rv, sizeof(unshare_rv));
 			close(pipe_fd[1]);
 			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
 				errExit("waitpid");
@@ -133,7 +150,42 @@ static void unsharenet(int sysadm, int clonens) {
 		case -1:
 			errExit("unshare fork");
 	}
-	setvdenscap(sysadm);
+	return unshare_rv;
+}
+
+#define STACK_SIZE (64 * 1024)
+
+static int childFunc(void *arg)
+{
+	int *pipe_fd = arg;
+	char buf[1];
+
+	/* Wait until the parent has updated the UID and GID mappings. */
+  if (read(pipe_fd[0], buf, 1) != 0)
+		errExit("Failure in child: read from pipe returned != 0");
+	close(pipe_fd[0]);
+	vdens_core();
+}
+
+static void clonenet(int sysadm, int clonens) {
+	char child_stack[STACK_SIZE];
+  int pipe_fd[2];
+	pid_t child_pid;
+  if (pipe2(pipe_fd, O_CLOEXEC) == -1)
+    errExit("pipe");
+	child_pid = clone(childFunc, child_stack + STACK_SIZE,
+      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | SIGCHLD |
+			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
+  if (child_pid == -1)
+    errExit("clone");
+  /* Parent falls through to here */
+  uid_gid_map(child_pid);
+	/* Close the write end of the pipe, to signal to the child that we
+		 have updated the UID and GID maps */
+  close(pipe_fd[1]);
+  if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
+    errExit("waitpid");
+  exit(EXIT_SUCCESS);
 }
 
 static int open_tap(char *name) {
@@ -207,8 +259,6 @@ static void stream2tap(int streamfd[2], int tapfd) {
 			vdestream_recv(vdestream, buf, n);
 		}
 		if (pfd[2].revents & POLLIN) {
-			//struct signalfd_siginfo fdsi;
-			//read(sfd, &fdsi, sizeof(fdsi));
 			break;
 		}
 	}
@@ -241,102 +291,11 @@ int mountaddr(const char *addr) {
 	return retval;
 }
 
-int argv1_nonet(char *s) {
-	if (s == NULL)
-		return 1;
-	if (strcmp(s,"") == 0)
-		return 1;
-	if (strcmp(s,"-") == 0)
-		return 1;
-	if (strcmp(s,"no") == 0)
-		return 1;
-	return 0;
-}
-
-int main(int argc, char *argv[])
-{
-	pid_t child_pid;
+void vdens_core(void) {
 	int tapfd;
-	int conntype;
-	int sysadm_flag = 0;
-	char *resolvconf = getenv("VDE_RESOLVCONF");
-	char *resolvaddr = getenv("VDE_RESOLVADDR");
-	char *if_name = DEFAULT_IF_NAME;
-	char *argvsh[] = {getenv("SHELL"),NULL};
-	char **cmdargv;
-	union {
-		VDECONN *vdeconn;
-		int streamfd[2];
-	} conn;
-	char *vdenet = NULL;
-	static char *short_options = "+i:hsr:R:";
-	static struct option long_options[] = {
-		{"help", no_argument, 0, 'h'},
-		{"iface", required_argument, 0, 'i'},
-		{"sysadm", no_argument, 0, 's'},
-		{"resolvconf", required_argument, 0, 'r'},
-		{"resolvaddr", required_argument, 0, 'R'},
-		{0, 0, 0, 0}};
-	char *progname = basename(argv[0]);
+	pid_t child_pid;
 
-	while (1) {
-		int c;
-		if ((c = getopt_long(argc, argv, short_options, long_options, NULL)) == -1)
-			break;
-		switch (c) {
-			case 'i': 
-				if_name = optarg;
-				break;
-			case 'r':
-				resolvconf = optarg;
-				break;
-			case 'R':
-				resolvaddr = optarg;
-				break;
-			case 's':
-				sysadm_flag = 1;
-				break;
-			case '?':
-			case 'h':
-			default: usage_exit(progname);
-		}
-	}
-	argc -= optind;
-	argv += optind;
-
-	switch (argc) {
-		case 0:
-			cmdargv = argvsh;
-			break;
-		case 1:
-			cmdargv = argvsh;
-			vdenet = argv[0];
-			break;
-		default:
-			cmdargv = argv + 1;
-			vdenet = argv[0];
-			break;
-	}
-
-	if (cmdargv[0] == NULL) {
-		fprintf(stderr, "Error: $SHELL env variable not set\n");
-		exit(EXIT_FAILURE); 
-	}
-
-	if (vdenet == NULL || argv1_nonet(vdenet))
-		conntype = CONNTYPE_NONE;
-	else if (*vdenet == '=') {
-		conntype = CONNTYPE_VDESTREAM;
-		if (coprocsp(vdenet+1, conn.streamfd) < 0)
-			errExit("stream cmd");
-	} else {
-		conntype = CONNTYPE_VDE;
-		if ((conn.vdeconn = vde_open(vdenet, "vdens", NULL)) == NULL)
-			errExit("vdeplug");
-	}
-
-	unsharenet(sysadm_flag, sysadm_flag | (resolvconf != NULL) | (resolvaddr != NULL));
-
+	setvdenscap(sysadm_flag);
 	if (resolvaddr) {
 		if (mountaddr(resolvaddr) < 0)
 			errExit("resolvaddr mount");
@@ -386,4 +345,115 @@ int main(int argc, char *argv[])
 	}
 
 	exit(EXIT_SUCCESS);
+}
+
+int argv1_nonet(char *s) {
+	if (s == NULL)
+		return 1;
+	if (strcmp(s,"") == 0)
+		return 1;
+	if (strcmp(s,"-") == 0)
+		return 1;
+	if (strcmp(s,"no") == 0)
+		return 1;
+	return 0;
+}
+
+int main(int argc, char *argv[])
+{
+	char *argvsh[] = {getenv("SHELL"),NULL};
+	char *vdenet = NULL;
+	static char *short_options = "+i:hsucr:R:";
+	static struct option long_options[] = {
+		{"help", no_argument, 0, 'h'},
+		{"iface", required_argument, 0, 'i'},
+		{"sysadm", no_argument, 0, 's'},
+		{"unshare", no_argument, 0, 'u'},
+		{"clone", no_argument, 0, 'c'},
+		{"resolvconf", required_argument, 0, 'r'},
+		{"resolvaddr", required_argument, 0, 'R'},
+		{0, 0, 0, 0}};
+	char *progname = basename(argv[0]);
+	int unshare_flag = 0;
+	int clone_flag = 0;
+	int clonens_flag;
+
+	resolvconf = getenv("VDE_RESOLVCONF");
+	resolvaddr = getenv("VDE_RESOLVADDR");
+
+	while (1) {
+		int c;
+		if ((c = getopt_long(argc, argv, short_options, long_options, NULL)) == -1)
+			break;
+		switch (c) {
+			case 'i': 
+				if_name = optarg;
+				break;
+			case 'r':
+				resolvconf = optarg;
+				break;
+			case 'R':
+				resolvaddr = optarg;
+				break;
+			case 's':
+				sysadm_flag = 1;
+				break;
+			case 'u':
+				unshare_flag = 1;
+				break;
+			case 'c':
+				clone_flag = 1;
+				break;
+			case '?':
+			case 'h':
+			default: usage_exit(progname);
+		}
+	}
+	argc -= optind;
+	argv += optind;
+
+	switch (argc) {
+		case 0:
+			cmdargv = argvsh;
+			break;
+		case 1:
+			cmdargv = argvsh;
+			vdenet = argv[0];
+			break;
+		default:
+			cmdargv = argv + 1;
+			vdenet = argv[0];
+			break;
+	}
+
+	if (cmdargv[0] == NULL) {
+		fprintf(stderr, "Error: $SHELL env variable not set\n");
+		exit(EXIT_FAILURE); 
+	}
+
+	if (vdenet == NULL || argv1_nonet(vdenet))
+		conntype = CONNTYPE_NONE;
+	else if (*vdenet == '=') {
+		conntype = CONNTYPE_VDESTREAM;
+		if (coprocsp(vdenet+1, conn.streamfd) < 0)
+			errExit("stream cmd");
+	} else {
+		conntype = CONNTYPE_VDE;
+		if ((conn.vdeconn = vde_open(vdenet, "vdens", NULL)) == NULL)
+			errExit("vdeplug");
+	}
+
+	clonens_flag = sysadm_flag | (resolvconf != NULL) | (resolvaddr != NULL);
+	if (clone_flag) 
+		clonenet(sysadm_flag, clonens_flag);
+	else {
+		if (unsharenet(sysadm_flag, clonens_flag) == 0)
+			vdens_core();
+		else {
+			if (unshare_flag)
+				errExit("unshare");
+			else
+				clonenet(sysadm_flag, clonens_flag);
+		}
+	}
 }
