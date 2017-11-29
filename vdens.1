@@ -14,6 +14,36 @@ vdens \- create a user namespace connected to a vde network
 ]
 ]
 
+.B vdens
+.B -m
+[ options ]
+.I vde_network
+[
+.I vde_network ...
+]
+[
+.B --
+.I command
+[
+.I args
+]
+]
+
+.B vdens
+.B --multi
+[ options ]
+.I vde_network
+[
+.I vde_network ...
+]
+[
+.B --
+.I command
+[
+.I args
+]
+]
+
 .SH DESCRIPTION
 
 vdens creates a user namespace with a private network namespace.
@@ -36,10 +66,20 @@ OPTIONS
 accepts the following options.
 
 .TP
+\fB\-s
+.TQ
+\fB\-\-multi
+connect the vde namespace to one or more vde networks. A virtual interface is defined
+for each \fIvde_network\fR: \fBvde0\fR is connected to the first \fIvde_network\fR,
+\fBvde1\fR is connected to the second and so on. (It is possible to use a different
+prefix for the interface names instead of "vde", see -i or --iface below).
+
+.TP
 \fB\-i \fI interface_name
 .TQ
 \fB\-\-iface \fI interface_name
-define the name of the interface (default value is "vde0")
+define the prefix of the interface name. For example use \fB--iface eth\fR to
+name the interfaces "eth0", "eth1", etc.  (the default value is "vde")
 
 .TP
 \fB\-R \fI ip_addr(s)
