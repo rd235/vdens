@@ -72,7 +72,7 @@ static void usage_exit(char *pname)
 			"OPTIONS:\n"
 			"  -h | --help    print this short usage message\n"
 			"  -m | --multi   connect two or more vde networks\n"
-			"  -i | --iface intname\n"
+			"  -i | --iface interface_prefix\n"
 			"                 define the interface name prefix, the default value is \"vde\"\n"
 			"                 e.g. use \"-i eth\" to name the virtual interfaces eth0, eth1, ...\n"
 			"  -r | --resolvconf file\n"
