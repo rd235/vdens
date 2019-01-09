@@ -1,6 +1,8 @@
 # vdens
 Create User Namespaces connected to VDE networks.
 
+(vdens requires [vdeplug4](https://github.com/rd235/vdeplug4))
+
 ## Install vdens
 
 Vdens uses the auto-tools, so the standard installation procedure is the following:
@@ -25,8 +27,6 @@ $ sudo echo 1 > /proc/sys/kernel/unprivileged_userns_clone
 ## Tutorial
 
 Vdens can be used without any parameter:
-
-(vdens requires [vdeplug4](https://github.com/rd235/vdeplug4))
 
 ```
 $ vdens
