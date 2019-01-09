@@ -86,7 +86,7 @@ static void usage_exit(char *pname)
 			"  -u | --unshare use unshare instead of clone:\n"
 			"                 %s saves 1 process (for non-multithreaded vde plugins only)\n"
 			"  no virtual interface if vde_net omitted or \"no\"\n"
-			"  it runs $SHELL if cmd omitted\n\n" , pname, pname);
+			"  it runs $SHELL if cmd omitted\n\n", pname, pname, pname, pname);
 	exit(EXIT_FAILURE);
 }
 
@@ -296,7 +296,7 @@ int mountaddr(const char *addr) {
 		len = tagend-tagbegin;
 		while (*tagend == ',')
 			tagend++;
-		asprintf(&line, "nameserver %*.*s\n", len, len, tagbegin);
+		asprintf(&line, "nameserver %*.*s\n", (int) len, (int) len, tagbegin);
 		write(fd, line, strlen(line));
 		free(line);
 	}
