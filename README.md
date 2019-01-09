@@ -25,6 +25,9 @@ $ sudo echo 1 > /proc/sys/kernel/unprivileged_userns_clone
 ## Tutorial
 
 Vdens can be used without any parameter:
+
+(vdens requires [vdeplug4](https://github.com/rd235/vdeplug4))
+
 ```
 $ vdens
 $ # ip addr
