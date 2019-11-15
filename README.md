@@ -5,10 +5,11 @@ Create User Namespaces connected to VDE networks.
 
 ## Install vdens
 
-Vdens uses the auto-tools, so the standard installation procedure is the following:
+Vdens uses cmake so a standard installation procedure is the following:
 ```
-$ autoreconf -if
-$ ./configure
+$ mkdir build
+$ cd build
+$ cmake ..
 $ make
 $ sudo make install
 ```
