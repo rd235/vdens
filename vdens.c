@@ -40,9 +40,10 @@
 #include <sys/stat.h>
 #include <execs.h>
 #include <getopt.h>
+#define UNUSED(...) (void)(__VA_ARGS__)
 
 #define DEFAULT_IF_NAME "vde"
-#define errExit(msg)    ({ perror(msg); exit(EXIT_FAILURE); })
+#define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); } while(0)
 
 #define CONNTYPE_UNDEF 0
 #define CONNTYPE_NONE 1
@@ -129,29 +130,33 @@ static void setambientcaps(cap_value_t *caplist) {
 static cap_value_t vdecaps[] = {CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_NET_RAW, CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST, -1};
 
 static void setvdenscap(int sysadm) {
-	setambientcaps(vdecaps + (sysadm ? 0 : 1));
+	setambientcaps(vdecaps + (sysadm ? 0 : 1)); /* skip CAP_SYS_ADMIN if sysadm is not set */
 }
 
 static int unsharenet(int sysadm, int clonens) {
 	int pipe_fd[2];
 	pid_t child_pid;
 	int unshare_rv;
+	ssize_t rwlen;
+	UNUSED(sysadm);
 	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
 		errExit("pipe");
 	switch (child_pid = fork()) {
 		case 0:
 			close(pipe_fd[1]);
-			read(pipe_fd[0], &unshare_rv, sizeof(unshare_rv));
-			if (unshare_rv == 0)
+			rwlen = read(pipe_fd[0], &unshare_rv, sizeof(unshare_rv));
+			if (rwlen == sizeof(unshare_rv) && unshare_rv == 0)
 				uid_gid_map(getppid());
 			exit(0);
 		default:
 			close(pipe_fd[0]);
 			unshare_rv = unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0));
-			write(pipe_fd[1], &unshare_rv, sizeof(unshare_rv));
+			rwlen = write(pipe_fd[1], &unshare_rv, sizeof(unshare_rv));
+			if (rwlen != sizeof(unshare_rv))
+				errExit("unsharenet write");
 			close(pipe_fd[1]);
 			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
-				errExit("waitpid");
+				errExit("unshare waitpid");
 			break;
 		case -1:
 			errExit("unshare fork");
@@ -171,12 +176,14 @@ static int childFunc(void *arg)
 		errExit("Failure in child: read from pipe returned != 0");
 	close(pipe_fd[0]);
 	vdens_core();
+	return 0;
 }
 
 static void clonenet(int sysadm, int clonens) {
 	char child_stack[STACK_SIZE];
   int pipe_fd[2];
 	pid_t child_pid;
+	UNUSED(sysadm);
   if (pipe2(pipe_fd, O_CLOEXEC) == -1)
     errExit("pipe");
 	child_pid = clone(childFunc, child_stack + STACK_SIZE,
@@ -229,7 +236,7 @@ static void plug2tap(VDECONN **conn, int *tapfd, int nnets) {
 			if (pfd[i].revents & POLLIN) {
 				n = vde_recv(conn[i], buf, VDE_ETHBUFSIZE, 0);
 				if (n == 0) goto terminate;
-				write(tapfd[i], buf, n);
+				n = write(tapfd[i], buf, n);
 			}
 			if (pfd[nnets + i].revents & POLLIN) {
 				n = read(tapfd[i], buf, VDE_ETHBUFSIZE);
@@ -289,15 +296,17 @@ int mountaddr(const char *addr) {
 		return -1;
 	fchmod(fd, 0600);
 	for (tagbegin = addr; *tagbegin != 0; tagbegin = tagend) {
-		char *line;
+		char *line = "";
 		size_t len;
+		int linelen;
 		for (tagend = tagbegin; *tagend != 0 && *tagend != ','; tagend++)
 			;
 		len = tagend-tagbegin;
 		while (*tagend == ',')
 			tagend++;
-		asprintf(&line, "nameserver %*.*s\n", (int) len, (int) len, tagbegin);
-		write(fd, line, strlen(line));
+		linelen = asprintf(&line, "nameserver %*.*s\n", (int) len, (int) len, tagbegin);
+		if (write(fd, line, linelen) < 0)
+			errExit("resolvconf create mountaddr");
 		free(line);
 	}
 	fchmod(fd, 0400);
@@ -345,8 +354,8 @@ void vdens_core(void) {
 		case CONNTYPE_MULTIVDE:
 			{
 				int nnets, i;
-				while (conn.vdemulticonn[nnets] != NULL)
-					nnets++;
+				for (nnets = 0; conn.vdemulticonn[nnets] != NULL; nnets++)
+					;
 				int tapfd[nnets];
 				for (i = 0; i < nnets; i++) 
 					tapfd[i] = open_tap(if_name, i);
