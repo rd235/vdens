@@ -41,6 +41,11 @@
 #include <getopt.h>
 #define UNUSED(...) (void)(__VA_ARGS__)
 
+/* workaround for legacy vde2 libvdeplug.h compatibility */
+#ifndef VDE_ETHBUFSIZE
+#define VDE_ETHBUFSIZE (9216 + 14 + 4)
+#endif
+
 #define DEFAULT_IF_NAME "vde"
 #define errExit(msg)    do { perror(msg); exit(EXIT_FAILURE); } while(0)
 
