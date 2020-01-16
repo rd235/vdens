@@ -190,9 +190,15 @@ static void clonenet(int sysadm, int clonens) {
 	UNUSED(sysadm);
   if (pipe2(pipe_fd, O_CLOEXEC) == -1)
     errExit("pipe");
+#ifdef __ia64__
+	child_pid = __clone2(childFunc, child_stack, STACK_SIZE,
+      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | SIGCHLD |
+			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
+#else
 	child_pid = clone(childFunc, child_stack + STACK_SIZE,
       CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | SIGCHLD |
 			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
+#endif
   if (child_pid == -1)
     errExit("clone");
   /* Parent falls through to here */
