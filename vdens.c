@@ -41,6 +41,12 @@
 #include <getopt.h>
 #define UNUSED(...) (void)(__VA_ARGS__)
 
+#ifdef __ia64__
+/* The ia64 port of glibc does not include a prototype for __clone2() */
+extern int __clone2 (int (*__fn) (void *__arg), void *__child_stack_base,
+         size_t __child_stack_size, int __flags, void *__arg, ...);
+#endif
+
 /* workaround for legacy vde2 libvdeplug.h compatibility */
 #ifndef VDE_ETHBUFSIZE
 #define VDE_ETHBUFSIZE (9216 + 14 + 4)
