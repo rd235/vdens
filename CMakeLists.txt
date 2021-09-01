@@ -29,7 +29,7 @@ add_definitions(-D_GNU_SOURCE)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(vdens vdens.c)
-target_link_libraries(vdens -lcap -lexecs -lvdeplug)
+target_link_libraries(vdens cap execs vdeplug)
 
 install(TARGETS vdens DESTINATION ${CMAKE_INSTALL_BINDIR})
 
