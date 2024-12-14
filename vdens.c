@@ -1,21 +1,21 @@
-/* 
+/*
  * vdens: Create a user namespace connected to a VDE network
  * Copyright (C) 2016  Renzo Davoli, Davide Berardi University of Bologna
  * Credit: inspired by the example code included in the
  *         user_namespaces(7) man page
- * 
+ *
  * Vdens is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version 2
  * of the License, or (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>. 
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -39,12 +39,13 @@
 #include <sys/stat.h>
 #include <execs.h>
 #include <getopt.h>
+#define POLLTERM (POLLHUP | POLLERR | POLLNVAL)
 #define UNUSED(...) (void)(__VA_ARGS__)
 
 #ifdef __ia64__
 /* The ia64 port of glibc does not include a prototype for __clone2() */
 extern int __clone2 (int (*__fn) (void *__arg), void *__child_stack_base,
-         size_t __child_stack_size, int __flags, void *__arg, ...);
+		size_t __child_stack_size, int __flags, void *__arg, ...);
 #endif
 
 /* workaround for legacy vde2 libvdeplug.h compatibility */
@@ -73,6 +74,9 @@ char *if_name = DEFAULT_IF_NAME;
 char **cmdargv;
 int sysadm_flag;
 char *hostname;
+sigset_t chldmask;
+int chldsigfd;
+int core_child_pid;
 
 void vdens_core(void);
 
@@ -132,11 +136,11 @@ static void uid_gid_map(pid_t pid) {
 static void setambientcaps(cap_value_t *caplist) {
 	cap_t caps=cap_get_proc();
 	cap_value_t *cap;
-	for (cap = caplist; *cap >= 0; cap++) 
+	for (cap = caplist; *cap >= 0; cap++)
 		cap_set_flag(caps, CAP_INHERITABLE, 1, cap, CAP_SET);
 	cap_set_proc(caps);
 	cap_free(caps);
-	for (cap = caplist; *cap >= 0; cap++) 
+	for (cap = caplist; *cap >= 0; cap++)
 		prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, *cap, 0, 0);
 }
 
@@ -148,13 +152,13 @@ static void setvdenscap(int sysadm) {
 
 static int unsharenet(int sysadm, int clonens) {
 	int pipe_fd[2];
-	pid_t child_pid;
+	pid_t unshare_child_pid;
 	int unshare_rv;
 	ssize_t rwlen;
 	UNUSED(sysadm);
 	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
 		errExit("pipe");
-	switch (child_pid = fork()) {
+	switch (unshare_child_pid = fork()) {
 		case 0:
 			close(pipe_fd[1]);
 			rwlen = read(pipe_fd[0], &unshare_rv, sizeof(unshare_rv));
@@ -169,7 +173,7 @@ static int unsharenet(int sysadm, int clonens) {
 			if (rwlen != sizeof(unshare_rv))
 				errExit("unsharenet write");
 			close(pipe_fd[1]);
-			if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
+			if (waitpid(unshare_child_pid, NULL, 0) == -1)      /* Wait for child */
 				errExit("unshare waitpid");
 			break;
 		case -1:
@@ -186,7 +190,7 @@ static int childFunc(void *arg)
 	char buf[1];
 
 	/* Wait until the parent has updated the UID and GID mappings. */
-  if (read(pipe_fd[0], buf, 1) != 0)
+	if (read(pipe_fd[0], buf, 1) != 0)
 		errExit("Failure in child: read from pipe returned != 0");
 	close(pipe_fd[0]);
 	vdens_core();
@@ -195,30 +199,30 @@ static int childFunc(void *arg)
 
 static void clonenet(int sysadm, int clonens) {
 	char child_stack[STACK_SIZE];
-  int pipe_fd[2];
+	int pipe_fd[2];
 	pid_t child_pid;
 	UNUSED(sysadm);
-  if (pipe2(pipe_fd, O_CLOEXEC) == -1)
-    errExit("pipe");
+	if (pipe2(pipe_fd, O_CLOEXEC) == -1)
+		errExit("pipe");
 #ifdef __ia64__
 	child_pid = __clone2(childFunc, child_stack, STACK_SIZE,
-      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD |
+			CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD |
 			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
 #else
 	child_pid = clone(childFunc, child_stack + STACK_SIZE,
-      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD |
+			CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD |
 			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
 #endif
-  if (child_pid == -1)
-    errExit("clone");
-  /* Parent falls through to here */
-  uid_gid_map(child_pid);
+	if (child_pid == -1)
+		errExit("clone");
+	/* Parent falls through to here */
+	uid_gid_map(child_pid);
 	/* Close the write end of the pipe, to signal to the child that we
 		 have updated the UID and GID maps */
-  close(pipe_fd[1]);
-  if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
-    errExit("waitpid");
-  exit(EXIT_SUCCESS);
+	close(pipe_fd[1]);
+	if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
+		errExit("waitpid");
+	exit(EXIT_SUCCESS);
 }
 
 static int open_tap(char *name, int n) {
@@ -238,13 +242,10 @@ static int open_tap(char *name, int n) {
 
 static void plug2tap(VDECONN **conn, int *tapfd, int nnets) {
 	int n, i;
-  char buf[VDE_ETHBUFSIZE];
+	char buf[VDE_ETHBUFSIZE];
 	int npfd = 2 * nnets + 1;
 	struct pollfd pfd[npfd];
-	sigset_t chldmask;
-  sigemptyset(&chldmask);
-  sigaddset(&chldmask, SIGCHLD);
-  pfd[2 * nnets].fd = signalfd(-1, &chldmask, SFD_CLOEXEC);
+	pfd[2 * nnets].fd = chldsigfd;
 	pfd[2 * nnets].events = POLLIN;
 	for (i = 0; i < nnets; i++) {
 		pfd[i].fd = vde_datafd(conn[i]);
@@ -263,15 +264,25 @@ static void plug2tap(VDECONN **conn, int *tapfd, int nnets) {
 				if (n == 0) goto terminate;
 				vde_send(conn[i], buf, n, 0);
 			}
+			if ((pfd[i].revents & POLLTERM) ||
+					(pfd[nnets + i].revents & POLLTERM)) {
+				vde_close(conn[i]);
+				close(tapfd[i]);
+				pfd[i].fd = pfd[nnets + i].fd = -1;
+			}
 		}
 		if (pfd[2 * nnets].revents & POLLIN) {
-			break;
+			int tpid = wait(NULL);
+			if (tpid == core_child_pid)
+				break;
 		}
 	}
 terminate:
 	for (i = 0; i < nnets; i++) {
-		vde_close(conn[i]);
-		close(tapfd[i]);
+		if (pfd[i].fd >= 0) {
+			vde_close(conn[i]);
+			close(tapfd[i]);
+		}
 	}
 }
 
@@ -283,13 +294,8 @@ static ssize_t stream2tap_read(void *opaque, void *buf, size_t count) {
 static void stream2tap(int streamfd[2], int tapfd) {
 	int n;
 	unsigned char buf[VDE_ETHBUFSIZE];
-	struct pollfd pfd[] = {{tapfd, POLLIN, 0}, {streamfd[0], POLLIN, 0}, {-1, POLLIN, 0}};
-	sigset_t chldmask;
-	sigemptyset(&chldmask);
-	sigaddset(&chldmask, SIGCHLD);
-	int sfd = signalfd(-1, &chldmask, SFD_CLOEXEC);
+	struct pollfd pfd[] = {{tapfd, POLLIN, 0}, {streamfd[0], POLLIN, 0}, {chldsigfd, POLLIN, 0}};
 	VDESTREAM *vdestream = vdestream_open(&tapfd, streamfd[1], stream2tap_read, NULL);
-	pfd[2].fd = sfd;
 	while (ppoll(pfd, 3, NULL, &chldmask) >= 0) {
 		if (pfd[0].revents & POLLIN) {
 			n = read(tapfd, buf, VDE_ETHBUFSIZE);
@@ -301,8 +307,18 @@ static void stream2tap(int streamfd[2], int tapfd) {
 			if (n == 0) break;
 			vdestream_recv(vdestream, buf, n);
 		}
+		if (pfd[0].revents & POLLTERM) {
+			close(tapfd);
+			pfd[0].fd = -1;
+		}
+		if (pfd[1].revents & POLLTERM) {
+			vdestream_close(vdestream);
+			pfd[1].fd = -1;
+		}
 		if (pfd[2].revents & POLLIN) {
-			break;
+			int tpid = wait(NULL);
+			if (tpid == core_child_pid)
+				break;
 		}
 	}
 }
@@ -337,7 +353,9 @@ int mountaddr(const char *addr) {
 }
 
 void vdens_core(void) {
-	pid_t child_pid;
+	sigemptyset(&chldmask);
+	sigaddset(&chldmask, SIGCHLD);
+	chldsigfd = signalfd(-1, &chldmask, SFD_CLOEXEC);
 
 	setvdenscap(sysadm_flag);
 
@@ -359,12 +377,12 @@ void vdens_core(void) {
 			execvp(cmdargv[0], cmdargv);
 			errExit("execvp");
 			break;
-		case CONNTYPE_VDE: 
+		case CONNTYPE_VDE:
 			{
 				int tapfd;
 				if ((tapfd = open_tap(if_name, 0)) < 0)
 					errExit("tap");
-				switch (child_pid = fork()) {
+				switch (core_child_pid = fork()) {
 					case 0:
 						execvp(cmdargv[0], cmdargv);
 						errExit("execvp");
@@ -384,28 +402,28 @@ void vdens_core(void) {
 				for (nnets = 0; conn.vdemulticonn[nnets] != NULL; nnets++)
 					;
 				int tapfd[nnets];
-				for (i = 0; i < nnets; i++) 
+				for (i = 0; i < nnets; i++)
 					tapfd[i] = open_tap(if_name, i);
-				switch (child_pid = fork()) {
-          case 0:
-            execvp(cmdargv[0], cmdargv);
-            errExit("execvp");
-            break;
-          default:
+				switch (core_child_pid = fork()) {
+					case 0:
+						execvp(cmdargv[0], cmdargv);
+						errExit("execvp");
+						break;
+					default:
 						plug2tap(conn.vdemulticonn, tapfd, nnets);
-            exit(EXIT_SUCCESS);
-          case -1:
-            errExit("cmd fork");
-            break;
-        }
-      }
-      break;
+						exit(EXIT_SUCCESS);
+					case -1:
+						errExit("cmd fork");
+						break;
+				}
+			}
+			break;
 		case CONNTYPE_VDESTREAM:
 			{
 				int tapfd;
 				if ((tapfd = open_tap(if_name, 0)) < 0)
 					errExit("tap");
-				switch (child_pid = fork()) {
+				switch (core_child_pid = fork()) {
 					case 0:
 						execvp(cmdargv[0], cmdargv);
 						errExit("execvp");
@@ -467,7 +485,7 @@ int main(int argc, char *argv[])
 		if ((c = getopt_long(argc, argv, short_options, long_options, NULL)) == -1)
 			break;
 		switch (c) {
-			case 'i': 
+			case 'i':
 				if_name = optarg;
 				break;
 			case 'r':
@@ -515,7 +533,7 @@ int main(int argc, char *argv[])
 			errExit("alloc VDE conn array");
 		for (i = 0; i < nnets; i++) {
 			if ((conn.vdemulticonn[i] = vde_open(argv[i], "vdens", NULL)) == NULL)
-        errExit(argv[i]);
+				errExit(argv[i]);
 		}
 		conn.vdemulticonn[i] = NULL;
 	} else {
@@ -535,7 +553,7 @@ int main(int argc, char *argv[])
 
 		if (cmdargv[0] == NULL) {
 			fprintf(stderr, "Error: $SHELL env variable not set\n");
-			exit(EXIT_FAILURE); 
+			exit(EXIT_FAILURE);
 		}
 
 		if (vdenet == NULL || argv1_nonet(vdenet))
@@ -552,7 +570,7 @@ int main(int argc, char *argv[])
 	}
 
 	clonens_flag = sysadm_flag | (resolvconf != NULL) | (resolvaddr != NULL);
-	if (clone_flag) 
+	if (clone_flag)
 		clonenet(sysadm_flag, clonens_flag);
 	else {
 		if (unsharenet(sysadm_flag, clonens_flag) == 0)
