@@ -72,6 +72,7 @@ char *resolvconf;
 char *if_name = DEFAULT_IF_NAME;
 char **cmdargv;
 int sysadm_flag;
+char *hostname;
 
 void vdens_core(void);
 
@@ -90,6 +91,8 @@ static void usage_exit(char *pname)
 			"                 define the /etc/resolv.conf file, e.g. -r /tmp/resolv.conf\n"
 			"  -R | --resolvaddr string\n"
 			"                 define the address of the DNS servers, e.g. -R 80.80.80.80\n"
+			"  -H | --hostname string\n"
+			"                 define the hostname of the namespace\n"
 			"  -s | --sysadm  enable the cap_sys_admin ambient capability\n"
 			"  -c | --clone   use clone instead of unshare:\n"
 			"                 %s uses one more process\n"
@@ -157,10 +160,11 @@ static int unsharenet(int sysadm, int clonens) {
 			rwlen = read(pipe_fd[0], &unshare_rv, sizeof(unshare_rv));
 			if (rwlen == sizeof(unshare_rv) && unshare_rv == 0)
 				uid_gid_map(getppid());
+
 			exit(0);
 		default:
 			close(pipe_fd[0]);
-			unshare_rv = unshare(CLONE_NEWUSER | CLONE_NEWNET | ((clonens) ? CLONE_NEWNS : 0));
+			unshare_rv = unshare(CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | ((clonens) ? CLONE_NEWNS : 0));
 			rwlen = write(pipe_fd[1], &unshare_rv, sizeof(unshare_rv));
 			if (rwlen != sizeof(unshare_rv))
 				errExit("unsharenet write");
@@ -198,11 +202,11 @@ static void clonenet(int sysadm, int clonens) {
     errExit("pipe");
 #ifdef __ia64__
 	child_pid = __clone2(childFunc, child_stack, STACK_SIZE,
-      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | SIGCHLD |
+      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD |
 			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
 #else
 	child_pid = clone(childFunc, child_stack + STACK_SIZE,
-      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | SIGCHLD |
+      CLONE_VM | CLONE_FILES | CLONE_NEWUSER | CLONE_NEWNET | CLONE_NEWUTS | SIGCHLD |
 			((clonens) ? CLONE_NEWNS : 0), pipe_fd);
 #endif
   if (child_pid == -1)
@@ -336,6 +340,13 @@ void vdens_core(void) {
 	pid_t child_pid;
 
 	setvdenscap(sysadm_flag);
+
+  if (hostname) {
+    if (sethostname(hostname, strlen(hostname))) {
+			errExit("sethostname");
+    }
+  }
+
 	if (resolvaddr) {
 		if (mountaddr(resolvaddr) < 0)
 			errExit("resolvaddr mount");
@@ -431,7 +442,7 @@ int main(int argc, char *argv[])
 {
 	char *argvsh[] = {getenv("SHELL"),NULL};
 	char *vdenet = NULL;
-	static char *short_options = "+i:hsucmr:R:";
+	static char *short_options = "+i:hsucmrH:R";
 	static struct option long_options[] = {
 		{"help", no_argument, 0, 'h'},
 		{"multi", no_argument, 0, 'm'},
@@ -441,6 +452,7 @@ int main(int argc, char *argv[])
 		{"clone", no_argument, 0, 'c'},
 		{"resolvconf", required_argument, 0, 'r'},
 		{"resolvaddr", required_argument, 0, 'R'},
+		{"hostname", required_argument, 0, 'H'},
 		{0, 0, 0, 0}};
 	char *progname = basename(argv[0]);
 	int unshare_flag = 0;
@@ -463,6 +475,9 @@ int main(int argc, char *argv[])
 				break;
 			case 'R':
 				resolvaddr = optarg;
+				break;
+			case 'H':
+				hostname = optarg;
 				break;
 			case 's':
 				sysadm_flag = 1;
