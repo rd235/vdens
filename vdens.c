@@ -460,7 +460,7 @@ int main(int argc, char *argv[])
 {
 	char *argvsh[] = {getenv("SHELL"),NULL};
 	char *vdenet = NULL;
-	static char *short_options = "+i:hsucmrH:R";
+	static char *short_options = "+i:hsucmr:H:R:";
 	static struct option long_options[] = {
 		{"help", no_argument, 0, 'h'},
 		{"multi", no_argument, 0, 'm'},
