@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.25)
 project("vdens"
     DESCRIPTION "create user namespaces connected to vde networks"
     HOMEPAGE_URL "https://github.com/rd235/vdens"
